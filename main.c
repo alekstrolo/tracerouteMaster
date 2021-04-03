@@ -26,7 +26,7 @@ struct icmp* get_icmp_header(u_int8_t* buffer){
     return icmp_header;
 }
 
-int custom_receive(int sockfd){
+int custom_receive(int sockfd{
     printf("custom_receive\n");
     /* ustawienie descryptorów na sockfd */
     struct  sockaddr_in addr;
@@ -104,7 +104,7 @@ int custom_receive(int sockfd){
         }
         ready = select (sockfd+1, &descriptors, NULL, NULL, &tv);
     }
-    if(packege_count == 3) return;
+    if(packege_count == 3) return 0;
     printf("to less packeges!\n");
     /*
     printf("\n READY: %d \n", ready);
@@ -169,7 +169,7 @@ int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
 
     if(bytes_sent < 0){
         fprintf(stderr, "err: bytes_sent: %s\n", strerror(errno));
-        return;
+        return -1;
     }
     printf("wyslalem, bytes_sent: %ld\n", bytes_sent);
     return 0;
@@ -189,9 +189,9 @@ int main(int argc, char *argv[]){
 
     struct sockaddr_in recipient;
     bzero(&recipient, sizeof(recipient));
-    addr.sin_port = htons(7);
+    recipient.sin_port = htons(7);
     recipient.sin_family = AF_INET;
-    int check = inet_ntop(AF_INET, input_ip, &recipient.sin_addr);
+    int check = inet_pton(AF_INET, input_ip, &recipient.sin_addr);
 
     if(check == 0){
         fprintf(stderr, "err: invalid ip address!\n");
@@ -204,8 +204,8 @@ int main(int argc, char *argv[]){
 
     //if(validate_ip(input_ip)){
         for(int i = 1; i < 30; i++){
-            custom_send(addr, sockfd, i);
-            custom_receive(addr, sockfd);
+            custom_send(recipient, sockfd, i);
+            custom_receive(sockfd);
         }
     //}else printf("wrn: podales niepoprawny addr ip");
     }else printf("wrn: podales niepoprawna liczbe argumentow!\n");
