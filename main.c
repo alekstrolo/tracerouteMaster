@@ -54,10 +54,10 @@ int custom_receive(int sockfd{
     int ready = select(sockfd + 1, &desc, NULL, NULL, &tv);
     if(ready < 0){
         fprintf(stderr,"err: %s", strerror(errno));
-        return;
+        return -1;
     }else if(ready == 0) {
         printf("* * *\n");
-        return;
+        return -1;
     }else{
         for(int i = 0; i < ready; i++){
             printf("ready: %d \n", ready);
@@ -66,27 +66,18 @@ int custom_receive(int sockfd{
             /* odczytywanie informacji z odebranych pakietow */
             if(pack_size < 0){
                 printf("error: negative size of packet!\n");
-                return;
+                return -1;
             }
 
-            struct ip* ip_header = (struct ip*) buffer;
-            ssize_t	ip_header_len = 4 * ip_header->ip_hl;
-
-            u_int8_t* icmp_packet = buffer + ip_header_len;
-            struct icmp* icmp_header = (struct icmp*) icmp_packet;
-            if( icmp_header->icmp_type == 11){
-
-                ip_header = &(icmp_header->icmp_ip);
-                ip_header_len = 4 * ip_header->ip_hl;
-
-                icmp_packet = (u_int8_t*)ip_header + ip_header_len;
-                icmp_header = (struct icmp*)icmp_packet;
-            }
-
+            struct icmp* icmp_header = get_icmp_header(buffer);
+            if( icmp_header->icmp_type == 11)
+                icmp_header = (struct icmp*)get_icmp_header(icmp_header->icmp_ipt);
+            
             int rcv_ttl = (icmp_header->icmp_seq - 1)/3 + 1;
 
             if(icmp_header->icmp_id != PID || rcv_ttl != ttl )
                 continue;
+
             /* odczyt adresu ip */
             char ip_str[20]; 
             inet_ntop(AF_INET,
@@ -96,46 +87,15 @@ int custom_receive(int sockfd{
             printf ("%d. %s ", ttl, ip_str);
             
             packege_count++;
-
-            /*gettimeofday(&tvorig, (struct timezone *)NULL);
-            tsorig = (tvorig.tv_sec % (24*60*60)) * 1000 + tvorig.tv_usec / 1000;
-            tsrecv = ntohl(icmp_header->icmp_otime);
-            avgTime += tsorig - tsrecv;*/
         }
         ready = select (sockfd+1, &descriptors, NULL, NULL, &tv);
     }
     if(packege_count == 3) return 0;
-    printf("to less packeges!\n");
-    /*
-    printf("\n READY: %d \n", ready);
-
-    //odczyt addr ip
-    char sender_ip_str[20];
-
-    inet_ntop(
-        AF_INET,
-        &(addr.sin_addr),
-        sender_ip_str,
-        sizeof(sender_ip_str)
-    );
-
-    printf("ip: %s\n", sender_ip_str);
-
-    //buffer
-    struct icmp* icmp_header = get_icmp_header(buffer);
-
-    if(icmp_header->icmp_type == 11){
-        icmp_header = get_icmp_header((uint8_t*)&icmp_header->icmp_ip);
-    }
-
-    printf("icmp_id: %d\n", icmp_header->icmp_id);
-
-    int rcv_id = icmp_header->icmp_seq;
-    int rcv_ttl = rcv_id / 3 + 1;
-
-    printf("rcv id: %d, ttl: %d\n", rcv_id, rcv_ttl);*/
+    if(packege_count < 3) printf("???\n");
+    return -1;
 }
 
+// DONE
 int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
     printf("custom_send\n");
 
@@ -185,31 +145,40 @@ int main(int argc, char *argv[]){
         return -1;
     }
     if(argc == 2){
-    char* input_ip = argv[1];
+        char* input_ip = argv[1];
 
-    struct sockaddr_in recipient;
-    bzero(&recipient, sizeof(recipient));
-    recipient.sin_port = htons(7);
-    recipient.sin_family = AF_INET;
-    int check = inet_pton(AF_INET, input_ip, &recipient.sin_addr);
+        struct sockaddr_in recipient;
+        bzero(&recipient, sizeof(recipient));
+        recipient.sin_port = htons(7);
+        recipient.sin_family = AF_INET;
+        int check = inet_pton(AF_INET, input_ip, &recipient.sin_addr);
 
-    if(check == 0){
-        fprintf(stderr, "err: invalid ip address!\n");
-        return -1;
-    }
-    if(check < 0){
-        fprintf(stderr, "err: %s\n", strerror(errno));
-        return -1;
-    }
-
-    //if(validate_ip(input_ip)){
-        for(int i = 1; i < 30; i++){
-            custom_send(recipient, sockfd, i);
-            custom_receive(sockfd);
+        if(check == 0){
+            fprintf(stderr, "err: invalid ip address!\n");
+            return -1;
         }
-    //}else printf("wrn: podales niepoprawny addr ip");
-    }else printf("wrn: podales niepoprawna liczbe argumentow!\n");
+        if(check < 0){
+            fprintf(stderr, "err: %s\n", strerror(errno));
+            return -1;
+        }
 
+        for(int i = 1; i < 30; i++){
+            int result;
+            result = custom_send(recipient, sockfd, i);
+            if(result < 0) return result;
+
+            result = custom_send(recipient, sockfd, i);
+            if(result < 0) return result;
+            
+            result = custom_send(recipient, sockfd, i);
+            if(result < 0) return result;
+
+            result = custom_receive(sockfd);
+            if(result < 0) return result;
+            else if(result == 0) return 0;
+        }
+    }else printf("wrn: podales niepoprawna liczbe argumentow!\n");
+    return 0;
 }
 
 bool validate_ip(char* ip_str)
