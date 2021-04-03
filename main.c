@@ -26,28 +26,87 @@ struct icmp* get_icmp_header(u_int8_t* buffer){
     return icmp_header;
 }
 
-void custom_receive(struct  sockaddr_in addr, int sockfd){
+int custom_receive(int sockfd){
     printf("custom_receive\n");
+    /* ustawienie descryptorów na sockfd */
+    struct  sockaddr_in addr;
+    ssize_t addr_size = sizeof(addr);
+
     fd_set desc;
     FD_ZERO (&desc);
     FD_SET (sockfd, &desc);
 
+    /* przygotowanie bufforu na odbieranie pakietów */
     u_int8_t buffer[IP_MAXPACKET];
 
+    /* timer 1 sek dla select */
     struct timeval tv;
     tv.tv_sec = 1;
     tv.tv_usec = 0;
 
+    /* śmieci */
+    int ttl = 1;
+
+    /* zmienne pomocnicze */
+    int packege_count = 0;
+
+
     int ready = select(sockfd + 1, &desc, NULL, NULL, &tv);
-    if(ready < 0) printf("err: ready below zero");
-    else if(ready == 0) {
-        printf("* * *\n");
-        return;
-    }else if(ready == -1){
+    if(ready < 0){
         fprintf(stderr,"err: %s", strerror(errno));
         return;
-    }
+    }else if(ready == 0) {
+        printf("* * *\n");
+        return;
+    }else{
+        for(int i = 0; i < ready; i++){
+            printf("ready: %d \n", ready);
+            /* odebranie pakietow */
+            long pack_size = recvfrom(sockfd, buffer, IP_MAXPACKET, 0, (struct sockaddr*)&addr, &addr_size);
+            /* odczytywanie informacji z odebranych pakietow */
+            if(pack_size < 0){
+                printf("error: negative size of packet!\n");
+                return;
+            }
 
+            struct ip* ip_header = (struct ip*) buffer;
+            ssize_t	ip_header_len = 4 * ip_header->ip_hl;
+
+            u_int8_t* icmp_packet = buffer + ip_header_len;
+            struct icmp* icmp_header = (struct icmp*) icmp_packet;
+            if( icmp_header->icmp_type == 11){
+
+                ip_header = &(icmp_header->icmp_ip);
+                ip_header_len = 4 * ip_header->ip_hl;
+
+                icmp_packet = (u_int8_t*)ip_header + ip_header_len;
+                icmp_header = (struct icmp*)icmp_packet;
+            }
+
+            int rcv_ttl = (icmp_header->icmp_seq - 1)/3 + 1;
+
+            if(icmp_header->icmp_id != PID || rcv_ttl != ttl )
+                continue;
+            /* odczyt adresu ip */
+            char ip_str[20]; 
+            inet_ntop(AF_INET,
+                &(addr.sin_addr),
+                sender_ip_str,
+                sizeof(ip_str));
+            printf ("%d. %s ", ttl, ip_str);
+            
+            packege_count++;
+
+            /*gettimeofday(&tvorig, (struct timezone *)NULL);
+            tsorig = (tvorig.tv_sec % (24*60*60)) * 1000 + tvorig.tv_usec / 1000;
+            tsrecv = ntohl(icmp_header->icmp_otime);
+            avgTime += tsorig - tsrecv;*/
+        }
+        ready = select (sockfd+1, &descriptors, NULL, NULL, &tv);
+    }
+    if(packege_count == 3) return;
+    printf("to less packeges!\n");
+    /*
     printf("\n READY: %d \n", ready);
 
     //odczyt addr ip
@@ -59,6 +118,7 @@ void custom_receive(struct  sockaddr_in addr, int sockfd){
         sender_ip_str,
         sizeof(sender_ip_str)
     );
+
     printf("ip: %s\n", sender_ip_str);
 
     //buffer
@@ -68,15 +128,15 @@ void custom_receive(struct  sockaddr_in addr, int sockfd){
         icmp_header = get_icmp_header((uint8_t*)&icmp_header->icmp_ip);
     }
 
-    printf("icmp_id: %d\n",icmp_header->icmp_id);
+    printf("icmp_id: %d\n", icmp_header->icmp_id);
 
     int rcv_id = icmp_header->icmp_seq;
     int rcv_ttl = rcv_id / 3 + 1;
 
-    printf("rcv id: %d, ttl: %d\n", rcv_id, rcv_ttl);
+    printf("rcv id: %d, ttl: %d\n", rcv_id, rcv_ttl);*/
 }
 
-void custom_send(struct  sockaddr_in addr,int sockfd, int ttl){
+int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
     printf("custom_send\n");
 
     //przygotowanie danych do wyslania
@@ -95,14 +155,6 @@ void custom_send(struct  sockaddr_in addr,int sockfd, int ttl){
     header.icmp_cksum = compute_icmp_checksum(
         (u_int16_t*)&header, sizeof(header));
 
-    //odbiorca
-
-/*
-    struct sockaddr_in recipient;
-    bzero(&recipient, sizeof(recipient));
-    recipient.sin_family = AF_INET;
-    inet_ntop(AF_INET, addr.sin_addr, &recipient.sin_addr, );
-*/
     //gniazdo
     setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(int));
 
@@ -111,8 +163,8 @@ void custom_send(struct  sockaddr_in addr,int sockfd, int ttl){
         &header,
         sizeof(header),
         0,
-        (struct sockaddr*)&addr,
-        sizeof(addr)
+        (struct sockaddr*)&recipient,
+        sizeof(recipient)
     );
 
     if(bytes_sent < 0){
@@ -120,6 +172,7 @@ void custom_send(struct  sockaddr_in addr,int sockfd, int ttl){
         return;
     }
     printf("wyslalem, bytes_sent: %ld\n", bytes_sent);
+    return 0;
 
 }
 
@@ -133,14 +186,19 @@ int main(int argc, char *argv[]){
     }
     if(argc == 2){
     char* input_ip = argv[1];
-    
-    struct sockaddr_in addr;
-    bzero(&addr, sizeof(addr));
-    addr.sin_port = htons(7);
-    addr.sin_family = AF_INET;
 
-    if(inet_pton(AF_INET, input_ip, &(addr.sin_addr)) != 1){
-        printf("err: invalid ip addr!\n");
+    struct sockaddr_in recipient;
+    bzero(&recipient, sizeof(recipient));
+    addr.sin_port = htons(7);
+    recipient.sin_family = AF_INET;
+    int check = inet_ntop(AF_INET, input_ip, &recipient.sin_addr);
+
+    if(check == 0){
+        fprintf(stderr, "err: invalid ip address!\n");
+        return -1;
+    }
+    if(check < 0){
+        fprintf(stderr, "err: %s\n", strerror(errno));
         return -1;
     }
 
