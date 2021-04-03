@@ -7,15 +7,18 @@
 #include<errno.h>
 #include<sys/types.h>
 #include<sys/socket.h>
+#include<sys/time.h> /* do obliczenia czasow */
 
-// Gniazdo
 #include<arpa/inet.h>
-#include<netinet/ip_icmp.h> //IP_MAXPACKET
-#include<netinet/ip.h> //IP_MAXPACKET
+#include<netinet/ip_icmp.h>
+#include<netinet/ip.h>
 
-int runda = 1;
+int pid;
 
-bool validate_ip(char* ip_str);
+/* obliczanie czasu */
+long delta_time_table[3];
+long receive_time;
+struct timeval time_send, time_receive;
 
 u_int16_t compute_icmp_checksum (const void *buff, int length);
 
@@ -26,11 +29,11 @@ struct icmp* get_icmp_header(u_int8_t* buffer){
     return icmp_header;
 }
 
-int custom_receive(int sockfd{
+int custom_receive(int sockfd, int pid, int ttl, char* addr_ip){
     printf("custom_receive\n");
     /* ustawienie descryptorów na sockfd */
     struct  sockaddr_in addr;
-    ssize_t addr_size = sizeof(addr);
+    socklen_t addr_size = sizeof(addr);
 
     fd_set desc;
     FD_ZERO (&desc);
@@ -43,13 +46,8 @@ int custom_receive(int sockfd{
     struct timeval tv;
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-
-    /* śmieci */
-    int ttl = 1;
-
-    /* zmienne pomocnicze */
     int packege_count = 0;
-
+    bool isGood = false;
 
     int ready = select(sockfd + 1, &desc, NULL, NULL, &tv);
     if(ready < 0){
@@ -59,44 +57,51 @@ int custom_receive(int sockfd{
         printf("* * *\n");
         return -1;
     }else{
-        for(int i = 0; i < ready; i++){
-            printf("ready: %d \n", ready);
-            /* odebranie pakietow */
-            long pack_size = recvfrom(sockfd, buffer, IP_MAXPACKET, 0, (struct sockaddr*)&addr, &addr_size);
-            /* odczytywanie informacji z odebranych pakietow */
-            if(pack_size < 0){
-                printf("error: negative size of packet!\n");
-                return -1;
+        char ip_str[20];
+        while(ready > 0){
+            for(int i = 0; i < ready; i++){
+                printf("for - ready: %d \n", ready);
+                /* odebranie pakietow */
+                ssize_t pack_size = recvfrom(sockfd, buffer, IP_MAXPACKET, 0, (struct sockaddr*)&addr, &addr_size);
+                /* odczytywanie informacji z odebranych pakietow */
+                if(pack_size < 0){
+                    printf("error: negative size of packege!\n");
+                    return -1;
+                }
+
+                struct icmp* icmp_header = get_icmp_header(buffer);
+                if( icmp_header->icmp_type == 11)
+                    icmp_header = (struct icmp*)get_icmp_header((uint8_t*)&(icmp_header->icmp_ip));
+                
+                int temp_recv_seq = icmp_header->icmp_seq;
+                int rcv_ttl = temp_recv_seq / 10;
+
+                printf("pid get: %d, pid: %d, ttl get: %d, ttl: %d\n", icmp_header->icmp_id, pid, rcv_ttl, ttl);
+                if(icmp_header->icmp_id != pid || rcv_ttl != ttl )
+                    continue;
+
+                /* odczyt adresu ip */
+                inet_ntop(AF_INET, &(addr.sin_addr), ip_str, sizeof(ip_str));
+                if(strcmp(ip_str, addr_ip) == 0){
+                    printf("%d. %s ", ttl, ip_str);
+                    packege_count++;
+                    printf ("ip_recv: %s, addr_ip: %s , count: %d", ip_str, addr_ip, packege_count);
+                    if(packege_count == 3) isGood = true;
+                }
             }
-
-            struct icmp* icmp_header = get_icmp_header(buffer);
-            if( icmp_header->icmp_type == 11)
-                icmp_header = (struct icmp*)get_icmp_header(icmp_header->icmp_ipt);
-            
-            int rcv_ttl = (icmp_header->icmp_seq - 1)/3 + 1;
-
-            if(icmp_header->icmp_id != PID || rcv_ttl != ttl )
-                continue;
-
-            /* odczyt adresu ip */
-            char ip_str[20]; 
-            inet_ntop(AF_INET,
-                &(addr.sin_addr),
-                sender_ip_str,
-                sizeof(ip_str));
-            printf ("%d. %s ", ttl, ip_str);
-            
-            packege_count++;
+            ready = select (sockfd+1, &desc, NULL, NULL, &tv);
         }
-        ready = select (sockfd+1, &descriptors, NULL, NULL, &tv);
     }
-    if(packege_count == 3) return 0;
-    if(packege_count < 3) printf("???\n");
-    return -1;
+    printf("package_count: %d\n", packege_count);
+    if(packege_count == 3 && isGood) return 12;
+    else if(packege_count == 2 || packege_count == 1) printf("???\n");
+    else if(packege_count == 0) printf("*\n");
+    // else msek
+    return 0;
 }
 
 // DONE
-int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
+int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl, int s_number){
     printf("custom_send\n");
 
     //przygotowanie danych do wyslania
@@ -104,19 +109,21 @@ int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
     header.icmp_type =  ICMP_ECHO;
     header.icmp_code = 0;
     header.icmp_hun.ih_idseq.icd_id = getpid();
-    header.icmp_hun.ih_idseq.icd_seq = runda;
+    header.icmp_hun.ih_idseq.icd_seq = ttl * 10 + s_number;
     /*
         header.icmp_id = getpid();
         header.icmp_seq = runda;
     */
-    runda++;
-    printf("runda: %d\n", runda);
+    printf("ttl: %d\n", ttl);
     header.icmp_cksum = 0;
     header.icmp_cksum = compute_icmp_checksum(
         (u_int16_t*)&header, sizeof(header));
 
     //gniazdo
     setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(int));
+
+    struct timeval stop, start;
+    gettimeofday(&start, NULL);
 
     ssize_t bytes_sent = sendto(
         sockfd,
@@ -139,7 +146,7 @@ int custom_send(struct  sockaddr_in recipient,int sockfd, int ttl){
 int main(int argc, char *argv[]){
     // definicje
     int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-
+    char* receiver_ip = "";
     if(sockfd < 0){
         fprintf(stderr ,"err: socket error %s\n", strerror(errno));
         return -1;
@@ -162,50 +169,26 @@ int main(int argc, char *argv[]){
             return -1;
         }
 
+        pid = getpid();
         for(int i = 1; i < 30; i++){
             int result;
-            result = custom_send(recipient, sockfd, i);
+            result = custom_send(recipient, sockfd, i, 1);
             if(result < 0) return result;
 
-            result = custom_send(recipient, sockfd, i);
+            result = custom_send(recipient, sockfd, i, 2);
             if(result < 0) return result;
             
-            result = custom_send(recipient, sockfd, i);
+            result = custom_send(recipient, sockfd, i, 3);
             if(result < 0) return result;
 
-            result = custom_receive(sockfd);
+            result = custom_receive(sockfd, pid, i, input_ip);
             if(result < 0) return result;
-            else if(result == 0) return 0;
+            if(result == 12) return 0;
+            //if(strcmp(receiver_ip, input_ip) == 0) return 0;
+            //else if(result == 0) return 0;
         }
     }else printf("wrn: podales niepoprawna liczbe argumentow!\n");
     return 0;
-}
-
-bool validate_ip(char* ip_str)
-{
-    if (ip_str == NULL)
-        return false;
-    int len = strlen(ip_str);
-    int count = 0;
-
-    int pom  = 0;
-    int po = 0;
-    for (int i = 0; i < len; i++){
-        if (ip_str[i] == '.' || i + 1 == len){
-            char subbuff[5];
-            if(i + 1 == len) pom += 1;
-            memcpy( subbuff, &ip_str[po], pom);
-            subbuff[pom] = '\0';
-            int part = atoi(subbuff);
-            if(part < 0 && part > 255) return false;
-            po += pom + 1;
-            pom = 0;
-            count++;
-        }else
-            pom++;
-    }
-    if(count == 4) return true;
-    return false;
 }
 
 u_int16_t compute_icmp_checksum (const void *buff, int length)
